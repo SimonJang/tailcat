@@ -45,7 +45,7 @@ Constructor for a tailcat instance
 #### `path`
 
 Type: `String`
-Description: Path to the file. The file itself needs to be newline delimited (CSV, NDJSON, etc...)
+Description: Path to the file. The file itself needs to be newline delimited (CSV, NDJSON, etc...). Binary files are not supported.
 
 ### `watch([options]): Promise<undefined>`
 
