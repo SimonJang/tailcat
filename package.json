@@ -1,7 +1,7 @@
 {
 	"name": "tailcat",
 	"version": "1.0.1",
-	"description": "File watcher, tail included",
+	"description": "Utility to watch a file and emit the changes",
 	"main": "lib/index.js",
 	"types": "lib/index.d.ts",
 	"scripts": {
@@ -16,7 +16,14 @@
 	"engines": {
 		"node": ">=12"
 	},
-	"keywords": [],
+	"keywords": [
+		"fs",
+		"file",
+		"watch file",
+		"tail",
+		"log"
+	],
+	"repository": "simonjang/tailcat",
 	"files": [
 		"lib"
 	],
