@@ -194,6 +194,9 @@ export class TailCat extends EventEmitter {
 		const {size: currentFileSize} = await promises.stat(this.#filePath);
 
 		if (currentFileSize <= 0) {
+			this.#cursor = 0;
+			this.#tail = '';
+
 			/**
 			 * This can sometimes provide a value lower then 0.
 			 * Skip iteration
@@ -204,6 +207,11 @@ export class TailCat extends EventEmitter {
 		const nextCursor = currentFileSize;
 
 		if (this.#cursor >= nextCursor) {
+			if (this.#cursor > nextCursor) {
+				this.#cursor = nextCursor;
+				this.#tail = '';
+			}
+
 			/**
 			 * Skip iteration since nothing will be read or invalid state
 			 */
