@@ -1,8 +1,8 @@
 import {EventEmitter} from 'events';
-import {EOL} from 'os';
 import {createReadStream, watch, promises} from 'fs';
 import {dirname, basename} from 'path';
 import {FSWatcher, Stats} from 'node:fs';
+import {StringDecoder} from 'node:string_decoder';
 
 interface TailCatWatchInput {
 	/**
@@ -23,13 +23,22 @@ function errorCode(error: unknown): string | undefined {
 		: undefined;
 }
 
+const closeWatcher = async (watcher: FSWatcher): Promise<void> => {
+	await new Promise<void>(resolve => {
+		watcher.once('close', resolve);
+		watcher.close();
+	});
+};
+
 export class TailCat extends EventEmitter {
 	#cursor = 0;
+	#isWatching = false;
 	#isReading = false;
 	#watcher: FSWatcher | undefined;
 	#filePath: string;
 	#internalQueue = 0;
 	#tail = '';
+	#decoder = new StringDecoder('utf8');
 
 	constructor(fileName: string) {
 		super();
@@ -54,9 +63,16 @@ export class TailCat extends EventEmitter {
 			return;
 		}
 
+		this.#isWatching = true;
 		this.#cursor = cursor;
 
-		await this.processFromFileName();
+		try {
+			await this.processFromFileName();
+		} catch (err) {
+			this.#isWatching = false;
+			await this.closeCurrentWatcher();
+			throw err;
+		}
 
 		return;
 	}
@@ -67,10 +83,76 @@ export class TailCat extends EventEmitter {
 	 * @returns cursor - The current cursor
 	 */
 	public async unwatch(): Promise<number> {
-		this.#watcher?.close();
-		this.#watcher = undefined;
+		this.#isWatching = false;
+		await this.closeCurrentWatcher();
 
 		return this.#cursor;
+	}
+
+	private async closeCurrentWatcher(): Promise<void> {
+		const watcher = this.#watcher;
+
+		if (!watcher) {
+			return;
+		}
+
+		await closeWatcher(watcher);
+
+		if (this.#watcher === watcher) {
+			this.#watcher = undefined;
+		}
+	}
+
+	private async handleWatcherError(error: unknown): Promise<void> {
+		this.#internalQueue = 0;
+		this.#isReading = false;
+		await this.unwatch();
+
+		if (this.listenerCount('error') > 0) {
+			this.emit('error', error);
+		}
+	}
+
+	private async processWatchEvent(event: string): Promise<void> {
+		if (event === 'rename') {
+			await this.closeCurrentWatcher();
+			this.#internalQueue = 0;
+			this.#isReading = false;
+			this.#cursor = 0;
+			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
+
+			await this.processFromFileName();
+
+			return;
+		}
+
+		/**
+		 * The algorithm in this listener makes sure that only 1 event is handled
+		 */
+		this.#internalQueue++;
+
+		if (this.#isReading) {
+			return;
+		}
+
+		do {
+			try {
+				this.#isReading = true;
+				await this.streamFileFromCursor();
+				this.#internalQueue--;
+			} catch (err) {
+				if (errorCode(err) !== 'ENOENT') {
+					await this.handleWatcherError(err);
+					return;
+				}
+
+				this.#internalQueue = 0;
+				this.#isReading = false;
+			}
+		} while (this.#internalQueue !== 0);
+
+		this.#isReading = false;
 	}
 
 	/**
@@ -80,6 +162,7 @@ export class TailCat extends EventEmitter {
 	 */
 	private async directoryWatcher(): Promise<FSWatcher> {
 		const watcher = watch(dirname(this.#filePath));
+		this.#watcher = watcher;
 
 		const promise = new Promise<FSWatcher>((resolve, reject) => {
 			watcher.on('change', (event, fileName) => {
@@ -91,7 +174,20 @@ export class TailCat extends EventEmitter {
 				}
 			});
 
-			watcher.on('error', err => reject(err));
+			watcher.on('error', err => {
+				if (this.#watcher === watcher) {
+					this.#watcher = undefined;
+				}
+
+				reject(err);
+			});
+			watcher.on('close', () => {
+				if (this.#watcher === watcher) {
+					this.#watcher = undefined;
+				}
+
+				resolve(watcher);
+			});
 		});
 
 		return promise;
@@ -104,20 +200,32 @@ export class TailCat extends EventEmitter {
 		let currentFileSize;
 		let fileData: Stats | undefined;
 
-		try {
-			fileData = await promises.stat(this.#filePath);
-			currentFileSize = fileData.size;
+		while (this.#isWatching) {
+			try {
+				fileData = await promises.stat(this.#filePath);
+				currentFileSize = fileData.size;
 
-			if (!fileData.isFile()) {
-				throw Error('Can only watch files');
-			}
-		} catch (err) {
-			if (errorCode(err) !== 'ENOENT') {
-				throw err;
+				if (!fileData.isFile()) {
+					throw Error('Can only watch files');
+				}
+			} catch (err) {
+				if (errorCode(err) !== 'ENOENT') {
+					throw err;
+				}
+
+				const watcher = await this.directoryWatcher();
+				if (this.#watcher === watcher) {
+					await this.closeCurrentWatcher();
+				}
+
+				continue;
 			}
 
-			const watcher = await this.directoryWatcher();
-			watcher.close();
+			break;
+		}
+
+		if (!this.#isWatching) {
+			return;
 		}
 
 		/**
@@ -150,40 +258,10 @@ export class TailCat extends EventEmitter {
 			return;
 		}
 
-		this.#watcher = watch(this.#filePath, async event => {
-			if (event === 'rename') {
-				/**
-				 * We're not interested in rename events
-				 */
-				return;
-			}
-
-			/**
-			 * The algorithm in this listener makes sure that only 1 event is handled
-			 */
-			this.#internalQueue++;
-
-			if (this.#isReading) {
-				return;
-			}
-
-			do {
-				try {
-					this.#isReading = true;
-					await this.streamFileFromCursor();
-					this.#internalQueue--;
-				} catch (err) {
-					if (errorCode(err) !== 'ENOENT') {
-						await this.unwatch();
-						throw err;
-					}
-
-					this.#internalQueue = 0;
-					this.#isReading = false;
-				}
-			} while (this.#internalQueue !== 0);
-
-			this.#isReading = false;
+		this.#watcher = watch(this.#filePath, event => {
+			void this
+				.processWatchEvent(event)
+				.catch(err => this.handleWatcherError(err));
 		});
 	}
 
@@ -196,6 +274,7 @@ export class TailCat extends EventEmitter {
 		if (currentFileSize <= 0) {
 			this.#cursor = 0;
 			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
 
 			/**
 			 * This can sometimes provide a value lower then 0.
@@ -209,6 +288,7 @@ export class TailCat extends EventEmitter {
 		if (this.#cursor > nextCursor) {
 			this.#cursor = 0;
 			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
 		}
 
 		if (this.#cursor >= nextCursor) {
@@ -226,15 +306,14 @@ export class TailCat extends EventEmitter {
 		let tail = this.#tail;
 		let currentTail = '';
 
-		for await (const item of fileStream) {
+		const processStringChunk = (stringChunk: string): void => {
 			let hasTail = false;
-			const stringChunk: string = item.toString();
 
-			if (!stringChunk.endsWith(EOL)) {
+			if (!stringChunk.endsWith('\n')) {
 				hasTail = true;
 			}
 
-			const chunks = stringChunk.split(EOL);
+			const chunks = stringChunk.split('\n');
 
 			currentTail = hasTail ? (chunks.pop() as string) : '';
 
@@ -247,12 +326,23 @@ export class TailCat extends EventEmitter {
 			tail = currentTail;
 
 			for (const chunk of chunks) {
-				if (!chunk.trim()) {
+				const line = chunk.endsWith('\r') ? chunk.slice(0, -1) : chunk;
+
+				if (!line.trim()) {
 					continue;
 				}
 
-				this.emit('data', chunk);
+				this.emit('data', line);
 			}
+		};
+
+		for await (const item of fileStream) {
+			const decodedChunk = this.#decoder.write(item);
+			if (!decodedChunk) {
+				continue;
+			}
+
+			processStringChunk(decodedChunk);
 		}
 
 		this.#tail = tail;

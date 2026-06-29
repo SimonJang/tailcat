@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {EOL} from 'node:os';
 import {join} from 'node:path';
+import {watch} from 'node:fs';
 import {setTimeout as delay} from 'node:timers/promises';
 import {appendFile, mkdir, rm, writeFile} from 'node:fs/promises';
 import test, {after, afterEach, before} from 'node:test';
@@ -29,6 +30,68 @@ const errorCode = (error: unknown): string | undefined =>
 	typeof error === 'object' && error !== null && 'code' in error
 		? String(error.code)
 		: undefined;
+
+const closeWatcher = async (
+	watcher: ReturnType<typeof watch> | undefined
+): Promise<void> => {
+	if (!watcher) {
+		return;
+	}
+
+	await new Promise<void>(resolve => {
+		watcher.once('close', resolve);
+		watcher.close();
+	});
+};
+
+const canWatchFileAndDirectory = async (
+	file: string,
+	directory: string
+): Promise<boolean> => {
+	let fileWatcher: ReturnType<typeof watch> | undefined;
+	let directoryWatcher: ReturnType<typeof watch> | undefined;
+
+	try {
+		fileWatcher = watch(file);
+		directoryWatcher = watch(directory);
+		await closeWatcher(directoryWatcher);
+		await closeWatcher(fileWatcher);
+		return true;
+	} catch (error) {
+		await closeWatcher(directoryWatcher);
+		await closeWatcher(fileWatcher);
+
+		if (errorCode(error) === 'EMFILE') {
+			return false;
+		}
+
+		throw error;
+	}
+};
+
+const canUseTailCatDirectoryWatcher = async (
+	directory: string
+): Promise<boolean> => {
+	const filePath = join(directory, `${randomUUID()}.watch-probe`);
+	const tailCat = new TailCat(filePath);
+
+	try {
+		await Promise.all([
+			tailCat.watch(),
+			delay(50).then(() => writeFile(filePath, ''))
+		]);
+		await tailCat.unwatch();
+		return true;
+	} catch (error) {
+		if (errorCode(error) === 'EMFILE') {
+			return false;
+		}
+
+		throw error;
+	} finally {
+		await rm(filePath, {force: true});
+	}
+};
 
 before(async () => {
 	await mkdir(fileFolder, {recursive: true});
@@ -305,8 +368,17 @@ test('should continue reading when the cursor provided after pausing', async () 
 	await tailCat.unwatch();
 });
 
-test('should not crash tailcat when the file is deleted while watching', async () => {
+test('should not crash tailcat when the file is deleted while watching', async t => {
 	const file = await createFile(`${randomUUID()}.txt`);
+
+	if (
+		!(await canWatchFileAndDirectory(file, fileFolder)) ||
+		!(await canUseTailCatDirectoryWatcher(fileFolder))
+	) {
+		t.skip('directory watchers are unavailable in this environment');
+		return;
+	}
+
 	const tailCat = new TailCat(file);
 
 	await tailCat.watch();
@@ -315,4 +387,141 @@ test('should not crash tailcat when the file is deleted while watching', async (
 	await tailCat.unwatch();
 
 	assert.ok(true);
+});
+
+test('should emit stripped lines for CRLF endings', async () => {
+	const file = await createFile(`${randomUUID()}.txt`);
+	const tailCat = new TailCat(file);
+	const lines: string[] = [];
+
+	await tailCat.watch();
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await appendFile(file, 'first\r\n');
+	await delay(1000);
+
+	assert.deepEqual(lines, ['first']);
+
+	await tailCat.unwatch();
+});
+
+test('should preserve UTF-8 multibyte characters split across stream chunks', async () => {
+	const file = await createFile(`${randomUUID()}.txt`);
+	const tailCat = new TailCat(file);
+	const lines: string[] = [];
+
+	await tailCat.watch();
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await appendFile(file, `${'a'.repeat(65535)}é\n`);
+	await delay(1000);
+
+	assert.equal(lines.length, 1);
+	assert.equal(lines[0], `${'a'.repeat(65535)}é`);
+
+	await tailCat.unwatch();
+});
+
+test('should preserve UTF-8 multibyte characters split across appends', async () => {
+	const file = await createFile(`${randomUUID()}.txt`);
+	const tailCat = new TailCat(file);
+	const lines: string[] = [];
+
+	await tailCat.watch();
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await appendFile(file, Buffer.from([0xc3]));
+	await delay(1000);
+
+	assert.deepEqual(lines, []);
+
+	await appendFile(file, Buffer.from([0xa9, 0x0a]));
+	await delay(1000);
+
+	assert.deepEqual(lines, ['é']);
+
+	await tailCat.unwatch();
+});
+
+test('should follow a watched file when it is deleted and recreated at the same path', async t => {
+	const file = await createFile(`${randomUUID()}.txt`);
+
+	if (
+		!(await canWatchFileAndDirectory(file, fileFolder)) ||
+		!(await canUseTailCatDirectoryWatcher(fileFolder))
+	) {
+		t.skip('directory watchers are unavailable in this environment');
+		return;
+	}
+
+	const tailCat = new TailCat(file);
+
+	await tailCat.watch();
+
+	const lines: string[] = [];
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await rm(file);
+	await writeFile(file, `recreated${EOL}`);
+	await delay(1500);
+
+	assert.deepEqual(lines, ['recreated']);
+
+	await tailCat.unwatch();
+});
+
+test('should emit an error when a watched file is recreated as a directory', async t => {
+	const file = await createFile(`${randomUUID()}.txt`);
+
+	if (
+		!(await canWatchFileAndDirectory(file, fileFolder)) ||
+		!(await canUseTailCatDirectoryWatcher(fileFolder))
+	) {
+		t.skip('directory watchers are unavailable in this environment');
+		return;
+	}
+
+	const tailCat = new TailCat(file);
+	let unhandledRejection: unknown;
+	const onUnhandledRejection = (reason: unknown): void => {
+		unhandledRejection = reason;
+	};
+
+	process.once('unhandledRejection', onUnhandledRejection);
+
+	try {
+		await tailCat.watch();
+
+		const errorPromise = new Promise<Error>(resolve => {
+			tailCat.once('error', error => resolve(error));
+		});
+
+		await rm(file);
+		await mkdir(file);
+
+		const error = await Promise.race([
+			errorPromise,
+			delay(1500).then(() => undefined)
+		]);
+
+		assert.ok(error instanceof Error);
+		assert.equal(error.message, 'Can only watch files');
+		assert.equal(unhandledRejection, undefined);
+	} finally {
+		process.removeListener('unhandledRejection', onUnhandledRejection);
+		await tailCat.unwatch();
+		await rm(file, {recursive: true, force: true});
+	}
 });
