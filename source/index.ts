@@ -23,8 +23,16 @@ function errorCode(error: unknown): string | undefined {
 		: undefined;
 }
 
+const closeWatcher = async (watcher: FSWatcher): Promise<void> => {
+	await new Promise<void>(resolve => {
+		watcher.once('close', resolve);
+		watcher.close();
+	});
+};
+
 export class TailCat extends EventEmitter {
 	#cursor = 0;
+	#isWatching = false;
 	#isReading = false;
 	#watcher: FSWatcher | undefined;
 	#filePath: string;
@@ -54,9 +62,15 @@ export class TailCat extends EventEmitter {
 			return;
 		}
 
+		this.#isWatching = true;
 		this.#cursor = cursor;
 
-		await this.processFromFileName();
+		try {
+			await this.processFromFileName();
+		} catch (err) {
+			this.#isWatching = false;
+			throw err;
+		}
 
 		return;
 	}
@@ -67,10 +81,24 @@ export class TailCat extends EventEmitter {
 	 * @returns cursor - The current cursor
 	 */
 	public async unwatch(): Promise<number> {
-		this.#watcher?.close();
-		this.#watcher = undefined;
+		this.#isWatching = false;
+		await this.closeCurrentWatcher();
 
 		return this.#cursor;
+	}
+
+	private async closeCurrentWatcher(): Promise<void> {
+		const watcher = this.#watcher;
+
+		if (!watcher) {
+			return;
+		}
+
+		await closeWatcher(watcher);
+
+		if (this.#watcher === watcher) {
+			this.#watcher = undefined;
+		}
 	}
 
 	/**
@@ -80,6 +108,7 @@ export class TailCat extends EventEmitter {
 	 */
 	private async directoryWatcher(): Promise<FSWatcher> {
 		const watcher = watch(dirname(this.#filePath));
+		this.#watcher = watcher;
 
 		const promise = new Promise<FSWatcher>((resolve, reject) => {
 			watcher.on('change', (event, fileName) => {
@@ -92,6 +121,7 @@ export class TailCat extends EventEmitter {
 			});
 
 			watcher.on('error', err => reject(err));
+			watcher.on('close', () => resolve(watcher));
 		});
 
 		return promise;
@@ -104,20 +134,32 @@ export class TailCat extends EventEmitter {
 		let currentFileSize;
 		let fileData: Stats | undefined;
 
-		try {
-			fileData = await promises.stat(this.#filePath);
-			currentFileSize = fileData.size;
+		while (this.#isWatching) {
+			try {
+				fileData = await promises.stat(this.#filePath);
+				currentFileSize = fileData.size;
 
-			if (!fileData.isFile()) {
-				throw Error('Can only watch files');
-			}
-		} catch (err) {
-			if (errorCode(err) !== 'ENOENT') {
-				throw err;
+				if (!fileData.isFile()) {
+					throw Error('Can only watch files');
+				}
+			} catch (err) {
+				if (errorCode(err) !== 'ENOENT') {
+					throw err;
+				}
+
+				const watcher = await this.directoryWatcher();
+				if (this.#watcher === watcher) {
+					await this.closeCurrentWatcher();
+				}
+
+				continue;
 			}
 
-			const watcher = await this.directoryWatcher();
-			watcher.close();
+			break;
+		}
+
+		if (!this.#isWatching) {
+			return;
 		}
 
 		/**
@@ -152,9 +194,14 @@ export class TailCat extends EventEmitter {
 
 		this.#watcher = watch(this.#filePath, async event => {
 			if (event === 'rename') {
-				/**
-				 * We're not interested in rename events
-				 */
+				await this.closeCurrentWatcher();
+				this.#internalQueue = 0;
+				this.#isReading = false;
+				this.#cursor = 0;
+				this.#tail = '';
+
+				await this.processFromFileName();
+
 				return;
 			}
 
