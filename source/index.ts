@@ -2,6 +2,7 @@ import {EventEmitter} from 'events';
 import {createReadStream, watch, promises} from 'fs';
 import {dirname, basename} from 'path';
 import {FSWatcher, Stats} from 'node:fs';
+import {StringDecoder} from 'node:string_decoder';
 
 interface TailCatWatchInput {
 	/**
@@ -297,13 +298,13 @@ export class TailCat extends EventEmitter {
 			start: this.#cursor,
 			end: nextCursor
 		});
+		const decoder = new StringDecoder('utf8');
 
 		let tail = this.#tail;
 		let currentTail = '';
 
-		for await (const item of fileStream) {
+		const processStringChunk = (stringChunk: string): void => {
 			let hasTail = false;
-			const stringChunk: string = item.toString();
 
 			if (!stringChunk.endsWith('\n')) {
 				hasTail = true;
@@ -330,6 +331,20 @@ export class TailCat extends EventEmitter {
 
 				this.emit('data', line);
 			}
+		};
+
+		for await (const item of fileStream) {
+			const decodedChunk = decoder.write(item);
+			if (!decodedChunk) {
+				continue;
+			}
+
+			processStringChunk(decodedChunk);
+		}
+
+		const finalChunk = decoder.end();
+		if (finalChunk) {
+			processStringChunk(finalChunk);
 		}
 
 		this.#tail = tail;
