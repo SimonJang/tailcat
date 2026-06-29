@@ -206,12 +206,12 @@ export class TailCat extends EventEmitter {
 
 		const nextCursor = currentFileSize;
 
-		if (this.#cursor >= nextCursor) {
-			if (this.#cursor > nextCursor) {
-				this.#cursor = nextCursor;
-				this.#tail = '';
-			}
+		if (this.#cursor > nextCursor) {
+			this.#cursor = 0;
+			this.#tail = '';
+		}
 
+		if (this.#cursor >= nextCursor) {
 			/**
 			 * Skip iteration since nothing will be read or invalid state
 			 */

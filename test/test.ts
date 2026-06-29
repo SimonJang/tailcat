@@ -226,6 +226,28 @@ test('should reset cursor and tail when a watched file is truncated', async () =
 	await tailCat.unwatch();
 });
 
+test('should reread current contents when a watched file shrinks below the cursor', async () => {
+	const file = await createFile(`${randomUUID()}.txt`);
+	const tailCat = new TailCat(file);
+	const lines: string[] = [];
+
+	await tailCat.watch();
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await appendFile(file, `original-long-line${EOL}`);
+	await delay(1000);
+
+	await writeFile(file, `new${EOL}`);
+	await delay(1000);
+
+	assert.deepEqual(lines, ['original-long-line', 'new']);
+
+	await tailCat.unwatch();
+});
+
 test('should eagerly read the data when data added while tailcat is paused and the cursor is lower then the file size provided', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
 	const tailCat = new TailCat(file);
