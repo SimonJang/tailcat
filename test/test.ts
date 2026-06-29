@@ -389,6 +389,69 @@ test('should not crash tailcat when the file is deleted while watching', async t
 	assert.ok(true);
 });
 
+test('should emit stripped lines for CRLF endings', async () => {
+	const file = await createFile(`${randomUUID()}.txt`);
+	const tailCat = new TailCat(file);
+	const lines: string[] = [];
+
+	await tailCat.watch();
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await appendFile(file, 'first\r\n');
+	await delay(1000);
+
+	assert.deepEqual(lines, ['first']);
+
+	await tailCat.unwatch();
+});
+
+test('should preserve UTF-8 multibyte characters split across stream chunks', async () => {
+	const file = await createFile(`${randomUUID()}.txt`);
+	const tailCat = new TailCat(file);
+	const lines: string[] = [];
+
+	await tailCat.watch();
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await appendFile(file, `${'a'.repeat(65535)}é\n`);
+	await delay(1000);
+
+	assert.equal(lines.length, 1);
+	assert.equal(lines[0], `${'a'.repeat(65535)}é`);
+
+	await tailCat.unwatch();
+});
+
+test('should preserve UTF-8 multibyte characters split across appends', async () => {
+	const file = await createFile(`${randomUUID()}.txt`);
+	const tailCat = new TailCat(file);
+	const lines: string[] = [];
+
+	await tailCat.watch();
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await appendFile(file, Buffer.from([0xc3]));
+	await delay(1000);
+
+	assert.deepEqual(lines, []);
+
+	await appendFile(file, Buffer.from([0xa9, 0x0a]));
+	await delay(1000);
+
+	assert.deepEqual(lines, ['é']);
+
+	await tailCat.unwatch();
+});
+
 test('should follow a watched file when it is deleted and recreated at the same path', async t => {
 	const file = await createFile(`${randomUUID()}.txt`);
 

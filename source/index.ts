@@ -1,8 +1,8 @@
 import {EventEmitter} from 'events';
-import {EOL} from 'os';
 import {createReadStream, watch, promises} from 'fs';
 import {dirname, basename} from 'path';
 import {FSWatcher, Stats} from 'node:fs';
+import {StringDecoder} from 'node:string_decoder';
 
 interface TailCatWatchInput {
 	/**
@@ -38,6 +38,7 @@ export class TailCat extends EventEmitter {
 	#filePath: string;
 	#internalQueue = 0;
 	#tail = '';
+	#decoder = new StringDecoder('utf8');
 
 	constructor(fileName: string) {
 		super();
@@ -119,6 +120,7 @@ export class TailCat extends EventEmitter {
 			this.#isReading = false;
 			this.#cursor = 0;
 			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
 
 			await this.processFromFileName();
 
@@ -272,6 +274,7 @@ export class TailCat extends EventEmitter {
 		if (currentFileSize <= 0) {
 			this.#cursor = 0;
 			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
 
 			/**
 			 * This can sometimes provide a value lower then 0.
@@ -285,6 +288,7 @@ export class TailCat extends EventEmitter {
 		if (this.#cursor > nextCursor) {
 			this.#cursor = 0;
 			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
 		}
 
 		if (this.#cursor >= nextCursor) {
@@ -302,15 +306,14 @@ export class TailCat extends EventEmitter {
 		let tail = this.#tail;
 		let currentTail = '';
 
-		for await (const item of fileStream) {
+		const processStringChunk = (stringChunk: string): void => {
 			let hasTail = false;
-			const stringChunk: string = item.toString();
 
-			if (!stringChunk.endsWith(EOL)) {
+			if (!stringChunk.endsWith('\n')) {
 				hasTail = true;
 			}
 
-			const chunks = stringChunk.split(EOL);
+			const chunks = stringChunk.split('\n');
 
 			currentTail = hasTail ? (chunks.pop() as string) : '';
 
@@ -323,12 +326,23 @@ export class TailCat extends EventEmitter {
 			tail = currentTail;
 
 			for (const chunk of chunks) {
-				if (!chunk.trim()) {
+				const line = chunk.endsWith('\r') ? chunk.slice(0, -1) : chunk;
+
+				if (!line.trim()) {
 					continue;
 				}
 
-				this.emit('data', chunk);
+				this.emit('data', line);
 			}
+		};
+
+		for await (const item of fileStream) {
+			const decodedChunk = this.#decoder.write(item);
+			if (!decodedChunk) {
+				continue;
+			}
+
+			processStringChunk(decodedChunk);
 		}
 
 		this.#tail = tail;
