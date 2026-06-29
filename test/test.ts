@@ -418,3 +418,47 @@ test('should follow a watched file when it is deleted and recreated at the same 
 
 	await tailCat.unwatch();
 });
+
+test('should emit an error when a watched file is recreated as a directory', async t => {
+	const file = await createFile(`${randomUUID()}.txt`);
+
+	if (
+		!(await canWatchFileAndDirectory(file, fileFolder)) ||
+		!(await canUseTailCatDirectoryWatcher(fileFolder))
+	) {
+		t.skip('directory watchers are unavailable in this environment');
+		return;
+	}
+
+	const tailCat = new TailCat(file);
+	let unhandledRejection: unknown;
+	const onUnhandledRejection = (reason: unknown): void => {
+		unhandledRejection = reason;
+	};
+
+	process.once('unhandledRejection', onUnhandledRejection);
+
+	try {
+		await tailCat.watch();
+
+		const errorPromise = new Promise<Error>(resolve => {
+			tailCat.once('error', error => resolve(error));
+		});
+
+		await rm(file);
+		await mkdir(file);
+
+		const error = await Promise.race([
+			errorPromise,
+			delay(1500).then(() => undefined)
+		]);
+
+		assert.ok(error instanceof Error);
+		assert.equal(error.message, 'Can only watch files');
+		assert.equal(unhandledRejection, undefined);
+	} finally {
+		process.removeListener('unhandledRejection', onUnhandledRejection);
+		await tailCat.unwatch();
+		await rm(file, {recursive: true, force: true});
+	}
+});

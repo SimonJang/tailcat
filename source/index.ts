@@ -69,6 +69,7 @@ export class TailCat extends EventEmitter {
 			await this.processFromFileName();
 		} catch (err) {
 			this.#isWatching = false;
+			await this.closeCurrentWatcher();
 			throw err;
 		}
 
@@ -101,6 +102,57 @@ export class TailCat extends EventEmitter {
 		}
 	}
 
+	private async handleWatcherError(error: unknown): Promise<void> {
+		this.#internalQueue = 0;
+		this.#isReading = false;
+		await this.unwatch();
+
+		if (this.listenerCount('error') > 0) {
+			this.emit('error', error);
+		}
+	}
+
+	private async processWatchEvent(event: string): Promise<void> {
+		if (event === 'rename') {
+			await this.closeCurrentWatcher();
+			this.#internalQueue = 0;
+			this.#isReading = false;
+			this.#cursor = 0;
+			this.#tail = '';
+
+			await this.processFromFileName();
+
+			return;
+		}
+
+		/**
+		 * The algorithm in this listener makes sure that only 1 event is handled
+		 */
+		this.#internalQueue++;
+
+		if (this.#isReading) {
+			return;
+		}
+
+		do {
+			try {
+				this.#isReading = true;
+				await this.streamFileFromCursor();
+				this.#internalQueue--;
+			} catch (err) {
+				if (errorCode(err) !== 'ENOENT') {
+					await this.handleWatcherError(err);
+					return;
+				}
+
+				this.#internalQueue = 0;
+				this.#isReading = false;
+			}
+		} while (this.#internalQueue !== 0);
+
+		this.#isReading = false;
+	}
+
 	/**
 	 * Watches a file and resolves when a rename event is detected for the file watched
 	 *
@@ -120,8 +172,20 @@ export class TailCat extends EventEmitter {
 				}
 			});
 
-			watcher.on('error', err => reject(err));
-			watcher.on('close', () => resolve(watcher));
+			watcher.on('error', err => {
+				if (this.#watcher === watcher) {
+					this.#watcher = undefined;
+				}
+
+				reject(err);
+			});
+			watcher.on('close', () => {
+				if (this.#watcher === watcher) {
+					this.#watcher = undefined;
+				}
+
+				resolve(watcher);
+			});
 		});
 
 		return promise;
@@ -192,45 +256,10 @@ export class TailCat extends EventEmitter {
 			return;
 		}
 
-		this.#watcher = watch(this.#filePath, async event => {
-			if (event === 'rename') {
-				await this.closeCurrentWatcher();
-				this.#internalQueue = 0;
-				this.#isReading = false;
-				this.#cursor = 0;
-				this.#tail = '';
-
-				await this.processFromFileName();
-
-				return;
-			}
-
-			/**
-			 * The algorithm in this listener makes sure that only 1 event is handled
-			 */
-			this.#internalQueue++;
-
-			if (this.#isReading) {
-				return;
-			}
-
-			do {
-				try {
-					this.#isReading = true;
-					await this.streamFileFromCursor();
-					this.#internalQueue--;
-				} catch (err) {
-					if (errorCode(err) !== 'ENOENT') {
-						await this.unwatch();
-						throw err;
-					}
-
-					this.#internalQueue = 0;
-					this.#isReading = false;
-				}
-			} while (this.#internalQueue !== 0);
-
-			this.#isReading = false;
+		this.#watcher = watch(this.#filePath, event => {
+			void this
+				.processWatchEvent(event)
+				.catch(err => this.handleWatcherError(err));
 		});
 	}
 
