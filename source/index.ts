@@ -38,6 +38,7 @@ export class TailCat extends EventEmitter {
 	#filePath: string;
 	#internalQueue = 0;
 	#tail = '';
+	#decoder = new StringDecoder('utf8');
 
 	constructor(fileName: string) {
 		super();
@@ -119,6 +120,7 @@ export class TailCat extends EventEmitter {
 			this.#isReading = false;
 			this.#cursor = 0;
 			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
 
 			await this.processFromFileName();
 
@@ -272,6 +274,7 @@ export class TailCat extends EventEmitter {
 		if (currentFileSize <= 0) {
 			this.#cursor = 0;
 			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
 
 			/**
 			 * This can sometimes provide a value lower then 0.
@@ -285,6 +288,7 @@ export class TailCat extends EventEmitter {
 		if (this.#cursor > nextCursor) {
 			this.#cursor = 0;
 			this.#tail = '';
+			this.#decoder = new StringDecoder('utf8');
 		}
 
 		if (this.#cursor >= nextCursor) {
@@ -298,7 +302,6 @@ export class TailCat extends EventEmitter {
 			start: this.#cursor,
 			end: nextCursor
 		});
-		const decoder = new StringDecoder('utf8');
 
 		let tail = this.#tail;
 		let currentTail = '';
@@ -334,17 +337,12 @@ export class TailCat extends EventEmitter {
 		};
 
 		for await (const item of fileStream) {
-			const decodedChunk = decoder.write(item);
+			const decodedChunk = this.#decoder.write(item);
 			if (!decodedChunk) {
 				continue;
 			}
 
 			processStringChunk(decodedChunk);
-		}
-
-		const finalChunk = decoder.end();
-		if (finalChunk) {
-			processStringChunk(finalChunk);
 		}
 
 		this.#tail = tail;

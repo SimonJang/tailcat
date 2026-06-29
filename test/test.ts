@@ -428,6 +428,30 @@ test('should preserve UTF-8 multibyte characters split across stream chunks', as
 	await tailCat.unwatch();
 });
 
+test('should preserve UTF-8 multibyte characters split across appends', async () => {
+	const file = await createFile(`${randomUUID()}.txt`);
+	const tailCat = new TailCat(file);
+	const lines: string[] = [];
+
+	await tailCat.watch();
+
+	tailCat.on('data', line => {
+		lines.push(line);
+	});
+
+	await appendFile(file, Buffer.from([0xc3]));
+	await delay(1000);
+
+	assert.deepEqual(lines, []);
+
+	await appendFile(file, Buffer.from([0xa9, 0x0a]));
+	await delay(1000);
+
+	assert.deepEqual(lines, ['é']);
+
+	await tailCat.unwatch();
+});
+
 test('should follow a watched file when it is deleted and recreated at the same path', async t => {
 	const file = await createFile(`${randomUUID()}.txt`);
 
