@@ -17,12 +17,19 @@ function validateFileName(fileName?: string): asserts fileName is string {
 	}
 }
 
+function errorCode(error: unknown): string | undefined {
+	return typeof error === 'object' && error !== null && 'code' in error
+		? String(error.code)
+		: undefined;
+}
+
 export class TailCat extends EventEmitter {
 	#cursor = 0;
 	#isReading = false;
 	#watcher: FSWatcher | undefined;
 	#filePath: string;
 	#internalQueue = 0;
+	#tail = '';
 
 	constructor(fileName: string) {
 		super();
@@ -101,11 +108,11 @@ export class TailCat extends EventEmitter {
 			fileData = await promises.stat(this.#filePath);
 			currentFileSize = fileData.size;
 
-			if (!fileData?.isFile) {
+			if (!fileData.isFile()) {
 				throw Error('Can only watch files');
 			}
 		} catch (err) {
-			if (err.code !== 'ENOENT') {
+			if (errorCode(err) !== 'ENOENT') {
 				throw err;
 			}
 
@@ -166,7 +173,7 @@ export class TailCat extends EventEmitter {
 					await this.streamFileFromCursor();
 					this.#internalQueue--;
 				} catch (err) {
-					if (err.code !== 'ENOENT') {
+					if (errorCode(err) !== 'ENOENT') {
 						await this.unwatch();
 						throw err;
 					}
@@ -208,7 +215,7 @@ export class TailCat extends EventEmitter {
 			end: nextCursor
 		});
 
-		let tail = '';
+		let tail = this.#tail;
 		let currentTail = '';
 
 		for await (const item of fileStream) {
@@ -223,7 +230,11 @@ export class TailCat extends EventEmitter {
 
 			currentTail = hasTail ? (chunks.pop() as string) : '';
 
-			chunks[0] = `${tail}${chunks[0]}`;
+			if (chunks.length > 0) {
+				chunks[0] = `${tail}${chunks[0]}`;
+			} else {
+				currentTail = `${tail}${currentTail}`;
+			}
 
 			tail = currentTail;
 
@@ -236,6 +247,7 @@ export class TailCat extends EventEmitter {
 			}
 		}
 
+		this.#tail = tail;
 		this.#cursor = nextCursor;
 	}
 }

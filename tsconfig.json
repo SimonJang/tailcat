@@ -13,7 +13,11 @@
 		"noFallthroughCasesInSwitch": true,
 		"allowSyntheticDefaultImports": true,
 		"strictNullChecks": true,
+		"rootDir": "source",
 		"outDir": "lib",
+		"types": [
+			"node"
+		],
 		"strict": true
 	},
 	"exclude": [
