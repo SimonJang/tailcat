@@ -1,5 +1,4 @@
 import {EventEmitter} from 'events';
-import {EOL} from 'os';
 import {createReadStream, watch, promises} from 'fs';
 import {dirname, basename} from 'path';
 import {FSWatcher, Stats} from 'node:fs';
@@ -306,11 +305,11 @@ export class TailCat extends EventEmitter {
 			let hasTail = false;
 			const stringChunk: string = item.toString();
 
-			if (!stringChunk.endsWith(EOL)) {
+			if (!stringChunk.endsWith('\n')) {
 				hasTail = true;
 			}
 
-			const chunks = stringChunk.split(EOL);
+			const chunks = stringChunk.split('\n');
 
 			currentTail = hasTail ? (chunks.pop() as string) : '';
 
@@ -323,11 +322,13 @@ export class TailCat extends EventEmitter {
 			tail = currentTail;
 
 			for (const chunk of chunks) {
-				if (!chunk.trim()) {
+				const line = chunk.endsWith('\r') ? chunk.slice(0, -1) : chunk;
+
+				if (!line.trim()) {
 					continue;
 				}
 
-				this.emit('data', chunk);
+				this.emit('data', line);
 			}
 		}
 
