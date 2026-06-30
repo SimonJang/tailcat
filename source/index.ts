@@ -188,6 +188,15 @@ export class TailCat extends EventEmitter {
 
 				resolve(watcher);
 			});
+
+			void promises.stat(this.#filePath).then(
+				() => resolve(watcher),
+				err => {
+					if (errorCode(err) !== 'ENOENT') {
+						reject(err);
+					}
+				}
+			);
 		});
 
 		return promise;

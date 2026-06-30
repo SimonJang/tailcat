@@ -467,19 +467,21 @@ test('should follow a watched file when it is deleted and recreated at the same 
 
 	await tailCat.watch();
 
-	const lines: string[] = [];
+	try {
+		const lines: string[] = [];
 
-	tailCat.on('data', line => {
-		lines.push(line);
-	});
+		tailCat.on('data', line => {
+			lines.push(line);
+		});
 
-	await rm(file);
-	await writeFile(file, `recreated${EOL}`);
-	await delay(1500);
+		await rm(file);
+		await writeFile(file, `recreated${EOL}`);
+		await delay(1500);
 
-	assert.deepEqual(lines, ['recreated']);
-
-	await tailCat.unwatch();
+		assert.deepEqual(lines, ['recreated']);
+	} finally {
+		await tailCat.unwatch();
+	}
 });
 
 test('should emit an error when a watched file is recreated as a directory', async t => {
