@@ -15,7 +15,7 @@
 	"scripts": {
 		"format": "prettier --write \"source/**/*.ts\" \"test/**/*.ts\"",
 		"build": "npm run clean && tsc -p tsconfig.json",
-		"test": "npm run build && node --import tsx --test test/test.ts",
+		"test": "npm run build && node --import tsx --test --test-force-exit test/test.ts",
 		"clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
 		"build-lib": "npm test",
 		"deploy": "npm run build-lib && np"
