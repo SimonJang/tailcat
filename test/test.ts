@@ -9,6 +9,13 @@ import test, {after, afterEach, before} from 'node:test';
 import {TailCat} from '../source';
 
 const fileFolder = join(__dirname, '__test_files__');
+const tailCats = new Set<TailCat>();
+
+const createTailCat = (fileName: string): TailCat => {
+	const tailCat = new TailCat(fileName);
+	tailCats.add(tailCat);
+	return tailCat;
+};
 
 const writeToFile = async (filePath: string): Promise<void> => {
 	for (let x = 0; x <= 4; x++) {
@@ -73,7 +80,7 @@ const canUseTailCatDirectoryWatcher = async (
 	directory: string
 ): Promise<boolean> => {
 	const filePath = join(directory, `${randomUUID()}.watch-probe`);
-	const tailCat = new TailCat(filePath);
+	const tailCat = createTailCat(filePath);
 
 	try {
 		await Promise.all([
@@ -102,15 +109,21 @@ after(async () => {
 });
 
 afterEach(async () => {
+	await Promise.all(
+		Array.from(tailCats, tailCat =>
+			tailCat.unwatch().catch(() => undefined)
+		)
+	);
+	tailCats.clear();
 	await delay(100);
 });
 
 test('should throw an error when passing and undefined filepath', () => {
-	assert.throws(() => new TailCat(undefined as any));
+	assert.throws(() => createTailCat(undefined as any));
 });
 
 test('should throw error when trying to watch a folder', async () => {
-	const tailCat = new TailCat(fileFolder);
+	const tailCat = createTailCat(fileFolder);
 
 	await assert.rejects(() => tailCat.watch(), {
 		message: 'Can only watch files'
@@ -119,7 +132,7 @@ test('should throw error when trying to watch a folder', async () => {
 
 test('should be lazy and not watch a file', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	tailCat.on('data', () => {
 		assert.fail('Should fail the test');
@@ -130,7 +143,7 @@ test('should be lazy and not watch a file', async () => {
 
 test('watch() method should return undefined', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	const response = await tailCat.watch();
 
@@ -147,7 +160,7 @@ test('watch() method should return undefined', async () => {
 test('should watch a non-existing file and start reading when it is created', async t => {
 	const fileName = `${randomUUID()}.txt`;
 	const filePath = await createFile(fileName, false);
-	const tailCat = new TailCat(filePath);
+	const tailCat = createTailCat(filePath);
 
 	try {
 		await Promise.all([
@@ -180,7 +193,7 @@ test('should watch a non-existing file and start reading when it is created', as
 
 test('Calling watch() method with undefined cursor should set the cursor to the start of the file', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	await tailCat.watch({cursor: undefined});
 
@@ -201,7 +214,7 @@ test('Calling watch() method with undefined cursor should set the cursor to the 
 
 test('actions should be idempotent and multiple call to watch should have no effect', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	await tailCat.watch();
 	await tailCat.watch();
@@ -224,7 +237,7 @@ test('actions should be idempotent and multiple call to watch should have no eff
 
 test('actions should be idempotent and multiple calls to unwatch should have no effect', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	await tailCat.watch();
 
@@ -247,7 +260,7 @@ test('actions should be idempotent and multiple calls to unwatch should have no 
 
 test('should pick up changes of the file in watch mode and emit changes', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	await tailCat.watch();
 
@@ -268,7 +281,7 @@ test('should pick up changes of the file in watch mode and emit changes', async 
 
 test('should reset cursor and tail when a watched file is truncated', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 	const lines: string[] = [];
 
 	await tailCat.watch();
@@ -291,7 +304,7 @@ test('should reset cursor and tail when a watched file is truncated', async () =
 
 test('should reread current contents when a watched file shrinks below the cursor', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 	const lines: string[] = [];
 
 	await tailCat.watch();
@@ -313,7 +326,7 @@ test('should reread current contents when a watched file shrinks below the curso
 
 test('should eagerly read the data when data added while tailcat is paused and the cursor is lower then the file size provided', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	await tailCat.watch();
 
@@ -342,7 +355,7 @@ test('should eagerly read the data when data added while tailcat is paused and t
 
 test('should continue reading when the cursor provided after pausing', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	await tailCat.watch();
 
@@ -379,7 +392,7 @@ test('should not crash tailcat when the file is deleted while watching', async t
 		return;
 	}
 
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	await tailCat.watch();
 	await delay(1000);
@@ -391,7 +404,7 @@ test('should not crash tailcat when the file is deleted while watching', async t
 
 test('should emit stripped lines for CRLF endings', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 	const lines: string[] = [];
 
 	await tailCat.watch();
@@ -410,7 +423,7 @@ test('should emit stripped lines for CRLF endings', async () => {
 
 test('should preserve UTF-8 multibyte characters split across stream chunks', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 	const lines: string[] = [];
 
 	await tailCat.watch();
@@ -430,7 +443,7 @@ test('should preserve UTF-8 multibyte characters split across stream chunks', as
 
 test('should preserve UTF-8 multibyte characters split across appends', async () => {
 	const file = await createFile(`${randomUUID()}.txt`);
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 	const lines: string[] = [];
 
 	await tailCat.watch();
@@ -463,7 +476,7 @@ test('should follow a watched file when it is deleted and recreated at the same 
 		return;
 	}
 
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 
 	await tailCat.watch();
 
@@ -495,7 +508,7 @@ test('should emit an error when a watched file is recreated as a directory', asy
 		return;
 	}
 
-	const tailCat = new TailCat(file);
+	const tailCat = createTailCat(file);
 	let unhandledRejection: unknown;
 	const onUnhandledRejection = (reason: unknown): void => {
 		unhandledRejection = reason;
